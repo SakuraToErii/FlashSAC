@@ -22,7 +22,27 @@ ACTION_BOUNDS = {
     "Isaac-Velocity-Rough-Anymal-C-v0": 1.0,
     "Isaac-Velocity-Flat-Anymal-D-v0": 1.0,
     "Isaac-Velocity-Rough-Anymal-D-v0": 1.0,
+    # unitree_rl_lab tasks (policy outputs ~[-1, 1]; scale/offset live in action manager)
+    "Unitree-G1-29dof-Velocity": 1.0,
+    "Unitree-G1-29dof-Velocity-Rough": 1.0,
+    "Unitree-G1-29dof-Velocity-POMDP1": 1.0,
+    "Unitree-G1-29dof-Velocity-POMDP2": 1.0,
+    "Unitree-H1-Velocity": 1.0,
+    "Unitree-Go2-Velocity": 1.0,
 }
+
+
+def _register_task_packages() -> None:
+    """Import task packages so gym.make / parse_env_cfg can resolve env ids."""
+    try:
+        import isaaclab_tasks  # noqa: F401
+    except ImportError:
+        pass
+    try:
+        import unitree_rl_lab.tasks  # noqa: F401
+    except ImportError:
+        # Optional: only required for Unitree-* task ids.
+        pass
 
 
 def recursive_to_numpy(
@@ -69,6 +89,9 @@ class IsaacLabVectorEnv(
 
         app_launcher = AppLauncher(headless=headless, device=device, enable_cameras=not headless)
         self.simulation_app = app_launcher.app
+
+        # Register official IsaacLab tasks and optional unitree_rl_lab tasks.
+        _register_task_packages()
 
         from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 

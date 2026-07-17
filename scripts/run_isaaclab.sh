@@ -26,6 +26,7 @@ for seed in "${seeds[@]}"; do
         uv run python train.py \
             --config_name flashSAC_base \
             --overrides seed=${seed} \
-            --overrides env.env_name=${env_name}
+            --overrides env.env_name=${env_name} \
+            --overrides agent.asymmetric_observation=true
     done
 done

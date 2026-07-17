@@ -1,6 +1,6 @@
 # FlashSAC (IsaacLab)
 
-FlashSAC training stack for **IsaacLab** only.
+FlashSAC training stack for **IsaacLab** / **unitree_rl_lab**, with export for sim2sim and real deploy.
 
 Target stack:
 
@@ -11,7 +11,7 @@ Target stack:
 | Isaac Lab | 2.3.0 |
 | PyTorch | 2.9.1 |
 
-Paper: [FlashSAC: Fast and Stable Off-Policy Reinforcement Learning for High-Dimensional Robot Control](https://arxiv.org/abs/2604.04539) · [Project page](https://holiday-robot.github.io/FlashSAC/)
+Paper: [FlashSAC](https://arxiv.org/abs/2604.04539) · [Project page](https://holiday-robot.github.io/FlashSAC/)
 
 ## Installation
 
@@ -30,21 +30,22 @@ uv python pin 3.11.14
 
 ### 3. Install dependencies
 
-Core package + IsaacLab:
-
 ```bash
 uv sync --extra isaaclab
 ```
 
-Dev tools (lint/typecheck):
+For Unitree tasks / `deploy.yaml` export, also install [unitree_rl_lab](https://github.com/unitreerobotics/unitree_rl_lab) into the same environment (editable install via their script).
 
 ```bash
-uv sync --extra isaaclab --dev
+uv sync --extra isaaclab --dev   # optional lint tools
 ```
 
 ## Training
 
-Default config is IsaacLab (`Isaac-Velocity-Flat-G1-v0`, 1024 envs, GPU buffer, AMP):
+Defaults target **unitree deploy**:
+
+- env: `Unitree-G1-29dof-Velocity`
+- `agent.asymmetric_observation=true` (actor uses policy obs only)
 
 ```bash
 uv run python train.py
@@ -54,14 +55,21 @@ Override env / seed:
 
 ```bash
 uv run python train.py \
-    --overrides env.env_name='Isaac-Velocity-Rough-G1-v0' \
+    --overrides env.env_name='Unitree-G1-29dof-Velocity-Rough' \
     --overrides seed=1000
 ```
 
-Batch benchmark:
+Official IsaacLab tasks still work:
 
 ```bash
-bash scripts/run_isaaclab.sh
+uv run python train.py --overrides env.env_name='Isaac-Velocity-Flat-G1-v0'
+```
+
+Batch scripts:
+
+```bash
+bash scripts/run_unitree.sh    # unitree_rl_lab tasks
+bash scripts/run_isaaclab.sh   # official IsaacLab locomotion set
 ```
 
 ### Logging
@@ -73,8 +81,6 @@ tensorboard --logdir runs
 ```
 
 ## Checkpointing
-
-Save at intervals:
 
 ```bash
 uv run python train.py \
@@ -90,31 +96,77 @@ uv run python train.py \
     --overrides buffer_load_path='models/.../step24400'
 ```
 
-## Visualization
+## Visualization (Isaac Sim)
 
 ```bash
 uv run python play_isaaclab.py \
     --checkpoint_path 'models/.../step24400' \
     --num_envs 16 \
     --num_episodes 10 \
-    --overrides env.env_name='Isaac-Velocity-Flat-G1-v0' \
-    --overrides agent.asymmetric_observation=true \
+    --overrides env.env_name='Unitree-G1-29dof-Velocity' \
     --overrides agent.buffer_max_length=1
 ```
+
+## Export for sim2sim / real deploy
+
+Exports **deterministic** policy `tanh(mean)` (same as eval `temperature=0`).
+
+ONNX only (no simulator):
+
+```bash
+uv run python export_policy.py \
+    --checkpoint_path models/.../step24400 \
+    --skip_deploy
+```
+
+ONNX + unitree `deploy.yaml` (needs Isaac Sim + unitree_rl_lab):
+
+```bash
+uv run python export_policy.py \
+    --checkpoint_path models/.../step24400 \
+    --env_name Unitree-G1-29dof-Velocity
+```
+
+Outputs under `<checkpoint>/exported/` by default:
+
+| File | Role |
+|---|---|
+| `policy.onnx` | Deploy / MuJoCo / `g1_ctrl` |
+| `params/deploy.yaml` | Obs layout, action scale/offset, joint map, PD |
+| `policy_meta.json` | Input/action dims and paths |
+
+Copy into unitree_rl_lab deploy layout (example):
+
+```text
+unitree_rl_lab/deploy/robots/g1_29dof/config/policy/<name>/
+  exported/policy.onnx
+  params/deploy.yaml
+```
+
+Then follow unitree_rl_lab sim2sim (`unitree_mujoco` + `g1_ctrl`) or sim2real.
+
+**Requirements for a valid deploy policy:**
+
+1. Train with `agent.asymmetric_observation=true` (default).
+2. Train on the same task you pass to `--env_name` when exporting `deploy.yaml`.
+3. ONNX input = policy observation only; action decoding uses `deploy.yaml` (scale/offset).
 
 ## Project layout
 
 ```
 flash_rl/
-  agents/          # FlashSAC agent
-  buffers/         # Replay buffers
-  common/          # Logger
-  envs/isaaclab.py # IsaacLab Gymnasium wrapper
+  agents/           # FlashSAC agent
+  buffers/
+  common/
+  envs/isaaclab.py  # IsaacLab + unitree task registration
+  export/           # actor.pt → ONNX helpers
   evaluation.py
-configs/           # Hydra configs (default: isaaclab)
+configs/
+scripts/run_unitree.sh
 scripts/run_isaaclab.sh
 train.py
 play_isaaclab.py
+export_policy.py
 ```
 
 ## Development

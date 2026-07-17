@@ -15,7 +15,8 @@ sample_batch_size: 2048
 normalize_reward: true
 normalized_G_max: 5.0
 
-asymmetric_observation: false
+# Required for sim2sim / real deploy: actor only consumes policy obs (not privileged critic).
+asymmetric_observation: true
 
 learning_rate_init: 3e-4
 learning_rate_peak: 3e-4

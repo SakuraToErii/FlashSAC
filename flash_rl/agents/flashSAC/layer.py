@@ -66,7 +66,9 @@ class UnitRMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.rms_norm(x, self.weight.shape, self.weight, eps=self.eps)
+        # Explicit form (ONNX-friendly). Equivalent to F.rms_norm over the last dim.
+        rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)
+        return x * (self.weight / rms)
 
     def normalize_parameters(self) -> None:
         scale = self.weight.data

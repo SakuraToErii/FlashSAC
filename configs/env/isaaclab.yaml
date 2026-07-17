@@ -1,9 +1,11 @@
 ##################################################################################
-# Isaac Lab
+# Isaac Lab / unitree_rl_lab
 ##################################################################################
 
 env_type: 'isaaclab'
-env_name: 'Isaac-Velocity-Flat-G1-v0'
+# Official IsaacLab: Isaac-Velocity-Flat-G1-v0
+# unitree_rl_lab (deploy-oriented): Unitree-G1-29dof-Velocity
+env_name: 'Unitree-G1-29dof-Velocity'
 num_env_steps: ${num_env_steps}
 
 seed: ${seed}
