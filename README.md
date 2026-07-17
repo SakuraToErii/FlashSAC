@@ -1,141 +1,128 @@
 # FlashSAC (IsaacLab)
 
-FlashSAC training stack for **IsaacLab** / **unitree_rl_lab**, with export for sim2sim and real deploy.
+FlashSAC 的 IsaacLab 训练与部署导出：离策略 SAC，面向高维机器人控制。
 
-Target stack:
+论文: [arXiv](https://arxiv.org/abs/2604.04539) · [项目页](https://holiday-robot.github.io/FlashSAC/)
 
-| Component | Version |
+默认目标栈：**本地 Isaac Sim 5.1 + Isaac Lab 2.3 + Python 3.11**（用已有 Lab 环境，不走 pip 安装 isaacsim）。
+
+---
+
+## 环境（本地已有 IsaacLab / IsaacSim）
+
+假定：
+
+- Isaac Lab：`~/projects/IsaacLab`（uv 管理 `.venv`）
+- Isaac Sim：本地安装，Lab 内 `_isaac_sim` 指向该目录
+- `unitree_rl_lab` 已装进 Lab 的 venv（可选，Unitree 任务与 `deploy.yaml` 需要）
+
+### 1. 激活 Lab 环境并挂上 FlashSAC 依赖
+
+```bash
+source ~/projects/IsaacLab/.venv/bin/activate
+cd /path/to/FlashSAC
+
+# 只装本仓库依赖，不要 uv sync --extra isaaclab（会拉 pip isaacsim）
+uv pip install -e . \
+  hydra-core omegaconf tqdm numpy "wandb==0.23" tensorboard pillow \
+  "gymnasium>=1.1.1" "onnx>=1.16.0" "onnxruntime>=1.18.0"
+```
+
+保持 Lab 自带的 `torch`（常见 2.7.x），不要强行升到 2.9。
+
+### 2. 启动方式
+
+`isaaclab.sh` 通过 `CONDA_PREFIX` 选 python。uv venv 可这样用：
+
+```bash
+source ~/projects/IsaacLab/.venv/bin/activate
+export CONDA_PREFIX="$VIRTUAL_ENV"
+
+cd /path/to/FlashSAC
+~/projects/IsaacLab/isaaclab.sh -p train.py
+```
+
+或已正确配置 Sim 环境变量后，直接：
+
+```bash
+python train.py
+```
+
+---
+
+## 训练
+
+默认：`Unitree-G1-29dof-Velocity`，`asymmetric_observation=true`（actor 只吃 policy obs，便于部署）。
+
+```bash
+# 单次
+~/projects/IsaacLab/isaaclab.sh -p train.py
+
+# 换任务 / seed
+~/projects/IsaacLab/isaaclab.sh -p train.py \
+  --overrides env.env_name='Unitree-G1-29dof-Velocity-Rough' \
+  --overrides seed=1000
+
+# 官方 IsaacLab 任务
+~/projects/IsaacLab/isaaclab.sh -p train.py \
+  --overrides env.env_name='Isaac-Velocity-Flat-G1-v0'
+```
+
+批量（需先 activate + `CONDA_PREFIX`，并把脚本里的 `uv run python` 改成 `python`，或手动循环 `isaaclab.sh -p train.py`）：
+
+```bash
+# Unitree 任务
+bash scripts/run_unitree.sh
+# 官方 IsaacLab 任务集
+bash scripts/run_isaaclab.sh
+```
+
+日志：`configs/flashSAC_base.yaml` 里 `logger_type: tensorboard | wandb`。  
+断点：`agent_load_path` / `buffer_load_path` 指向 `models/.../stepN`。
+
+Isaac 内可视化：
+
+```bash
+~/projects/IsaacLab/isaaclab.sh -p play_isaaclab.py \
+  --checkpoint_path models/.../step24400 \
+  --num_envs 16 \
+  --overrides env.env_name='Unitree-G1-29dof-Velocity' \
+  --overrides agent.buffer_max_length=1
+```
+
+---
+
+## 导出（actor.pt → policy.onnx + deploy.yaml）
+
+确定性策略：`tanh(mean)`（与 eval temperature=0 一致）。
+
+```bash
+# 仅 ONNX
+python export_policy.py \
+  --checkpoint_path models/.../step24400 \
+  --skip_deploy
+
+# ONNX + deploy.yaml（需 unitree 任务 + 短时起 Sim）
+~/projects/IsaacLab/isaaclab.sh -p export_policy.py \
+  --checkpoint_path models/.../step24400 \
+  --env_name Unitree-G1-29dof-Velocity
+```
+
+默认输出 `<checkpoint>/exported/`：
+
+| 文件 | 用途 |
 |---|---|
-| Python | 3.11 |
-| Isaac Sim | 5.1.0 |
-| Isaac Lab | 2.3.0 |
-| PyTorch | 2.9.1 |
+| `policy.onnx` | sim2sim / 真机推理 |
+| `params/deploy.yaml` | obs 拼装、action scale/offset、关节映射、PD |
+| `policy_meta.json` | 维度与路径记录 |
 
-Paper: [FlashSAC](https://arxiv.org/abs/2604.04539) · [Project page](https://holiday-robot.github.io/FlashSAC/)
+前提：训练时 `asymmetric_observation=true`；导出 `--env_name` 与训练 task 一致。
 
-## Installation
+---
 
-### 1. Install uv
+## Sim2sim / Sim2real（unitree_rl_lab）
 
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-### 2. Pin Python 3.11
-
-```bash
-uv python pin 3.11.14
-```
-
-### 3. Install dependencies
-
-```bash
-uv sync --extra isaaclab
-```
-
-For Unitree tasks / `deploy.yaml` export, also install [unitree_rl_lab](https://github.com/unitreerobotics/unitree_rl_lab) into the same environment (editable install via their script).
-
-```bash
-uv sync --extra isaaclab --dev   # optional lint tools
-```
-
-## Training
-
-Defaults target **unitree deploy**:
-
-- env: `Unitree-G1-29dof-Velocity`
-- `agent.asymmetric_observation=true` (actor uses policy obs only)
-
-```bash
-uv run python train.py
-```
-
-Override env / seed:
-
-```bash
-uv run python train.py \
-    --overrides env.env_name='Unitree-G1-29dof-Velocity-Rough' \
-    --overrides seed=1000
-```
-
-Official IsaacLab tasks still work:
-
-```bash
-uv run python train.py --overrides env.env_name='Isaac-Velocity-Flat-G1-v0'
-```
-
-Batch scripts:
-
-```bash
-bash scripts/run_unitree.sh    # unitree_rl_lab tasks
-bash scripts/run_isaaclab.sh   # official IsaacLab locomotion set
-```
-
-### Logging
-
-Set `logger_type` in `configs/flashSAC_base.yaml` to `wandb` or `tensorboard`. TensorBoard logs go to `runs/`:
-
-```bash
-tensorboard --logdir runs
-```
-
-## Checkpointing
-
-```bash
-uv run python train.py \
-    --overrides save_checkpoint_per_interaction_step=24400 \
-    --overrides save_buffer_per_interaction_step=24400
-```
-
-Resume:
-
-```bash
-uv run python train.py \
-    --overrides agent_load_path='models/.../step24400' \
-    --overrides buffer_load_path='models/.../step24400'
-```
-
-## Visualization (Isaac Sim)
-
-```bash
-uv run python play_isaaclab.py \
-    --checkpoint_path 'models/.../step24400' \
-    --num_envs 16 \
-    --num_episodes 10 \
-    --overrides env.env_name='Unitree-G1-29dof-Velocity' \
-    --overrides agent.buffer_max_length=1
-```
-
-## Export for sim2sim / real deploy
-
-Exports **deterministic** policy `tanh(mean)` (same as eval `temperature=0`).
-
-ONNX only (no simulator):
-
-```bash
-uv run python export_policy.py \
-    --checkpoint_path models/.../step24400 \
-    --skip_deploy
-```
-
-ONNX + unitree `deploy.yaml` (needs Isaac Sim + unitree_rl_lab):
-
-```bash
-uv run python export_policy.py \
-    --checkpoint_path models/.../step24400 \
-    --env_name Unitree-G1-29dof-Velocity
-```
-
-Outputs under `<checkpoint>/exported/` by default:
-
-| File | Role |
-|---|---|
-| `policy.onnx` | Deploy / MuJoCo / `g1_ctrl` |
-| `params/deploy.yaml` | Obs layout, action scale/offset, joint map, PD |
-| `policy_meta.json` | Input/action dims and paths |
-
-Copy into unitree_rl_lab deploy layout (example):
+1. 将导出结果放进 unitree 部署目录，例如：
 
 ```text
 unitree_rl_lab/deploy/robots/g1_29dof/config/policy/<name>/
@@ -143,46 +130,24 @@ unitree_rl_lab/deploy/robots/g1_29dof/config/policy/<name>/
   params/deploy.yaml
 ```
 
-Then follow unitree_rl_lab sim2sim (`unitree_mujoco` + `g1_ctrl`) or sim2real.
+2. **Sim2sim**：按 unitree_rl_lab 文档起 `unitree_mujoco`，再跑 `deploy/robots/g1_29dof/build/g1_ctrl`（站立 → 触地 → 跑 policy）。
 
-**Requirements for a valid deploy policy:**
-
-1. Train with `agent.asymmetric_observation=true` (default).
-2. Train on the same task you pass to `--env_name` when exporting `deploy.yaml`.
-3. ONNX input = policy observation only; action decoding uses `deploy.yaml` (scale/offset).
-
-## Project layout
-
-```
-flash_rl/
-  agents/           # FlashSAC agent
-  buffers/
-  common/
-  envs/isaaclab.py  # IsaacLab + unitree task registration
-  export/           # actor.pt → ONNX helpers
-  evaluation.py
-configs/
-scripts/run_unitree.sh
-scripts/run_isaaclab.sh
-train.py
-play_isaaclab.py
-export_policy.py
-```
-
-## Development
+3. **Sim2real**：关板上冲突控制后：
 
 ```bash
-uv sync --extra isaaclab --dev
-./bin/lint
+./g1_ctrl --network eth0
 ```
 
-## Citation
+细节与手柄流程见 [unitree_rl_lab Deploy](https://github.com/unitreerobotics/unitree_rl_lab#deploy)。
 
-```bibtex
-@article{kim2026flashsac,
-  title={FlashSAC: Fast and Stable Off-Policy Reinforcement Learning for High-Dimensional Robot Control},
-  author={Kim, Donghu and Lee, Youngdo and Park, Minho and Kim, Kinam and Nahendra, I Made Aswin and Seno, Takuma and Min, Sehee and Palenicek, Daniel and Vogt, Florian and Kragic, Danica and Peters, Jan and Choo, Jaegul and Lee, Hojoon},
-  journal={arXiv preprint arXiv:2604.04539},
-  year={2026}
-}
+---
+
+## 布局
+
+```
+train.py / play_isaaclab.py / export_policy.py
+configs/          # 默认 env=isaaclab → Unitree-G1-29dof-Velocity
+flash_rl/envs/    # IsaacLab wrapper（可注册 unitree tasks）
+flash_rl/export/  # actor → ONNX
+scripts/          # 批量训练
 ```
