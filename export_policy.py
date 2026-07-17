@@ -1,17 +1,29 @@
-"""Export FlashSAC actor.pt to policy.onnx (+ deploy.yaml for unitree_rl_lab).
+"""CLI: FlashSAC ``actor.pt`` → ``policy.onnx`` (+ unitree ``deploy.yaml``).
 
-Examples
---------
-ONNX only (no Isaac Sim)::
+Two stages
+----------
+1. ONNX (always)
+   Loads ``<checkpoint_path>/actor.pt``, infers network sizes, writes
+   deterministic ``tanh(mean)`` policy to ``policy.onnx`` under
+   ``<checkpoint_path>/exported`` (or ``--output_dir``).
 
-    uv run python export_policy.py \\
-        --checkpoint_path models/.../step24400
+2. deploy.yaml (optional)
+   Starts a short-lived Isaac Lab env for ``--env_name`` and calls
+   ``unitree_rl_lab.utils.export_deploy_cfg.export_deploy_cfg``. Writes
+   ``params/deploy.yaml`` (joint map, PD, obs terms, action scale/offset).
+   Requires local Isaac Sim + unitree_rl_lab in the active Python env.
 
-ONNX + deploy.yaml (requires Isaac Sim + unitree_rl_lab for Unitree tasks)::
+Local IsaacLab stack (recommended)::
 
-    uv run python export_policy.py \\
+    source ~/projects/IsaacLab/.venv/bin/activate
+    export CONDA_PREFIX="$VIRTUAL_ENV"
+    ~/projects/IsaacLab/isaaclab.sh -p export_policy.py \\
         --checkpoint_path models/.../step24400 \\
         --env_name Unitree-G1-29dof-Velocity
+
+ONNX-only (no simulator)::
+
+    python export_policy.py --checkpoint_path models/.../step24400 --skip_deploy
 """
 
 from __future__ import annotations
@@ -24,6 +36,7 @@ from typing import Any
 
 
 def _export_onnx_only(args: argparse.Namespace) -> dict[str, Any]:
+    """Stage 1: load actor.pt → policy.onnx (+ optional TorchScript + meta json)."""
     import torch
 
     from flash_rl.export.actor_export import (
@@ -58,6 +71,7 @@ def _export_onnx_only(args: argparse.Namespace) -> dict[str, Any]:
         export_actor_torchscript(actor, pt_path, input_dim=dims["input_dim"], device=device)
         print(f"[export] wrote {pt_path}")
 
+    # Side-car metadata for humans / deploy packaging scripts.
     meta = {
         "checkpoint_path": os.path.abspath(args.checkpoint_path),
         "actor_path": os.path.abspath(actor_path),
@@ -75,7 +89,12 @@ def _export_onnx_only(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _export_deploy_yaml(args: argparse.Namespace, output_dir: str) -> str:
-    """Launch Isaac Sim briefly and write params/deploy.yaml via unitree_rl_lab."""
+    """Stage 2: spin up Isaac Lab task and dump unitree deploy.yaml.
+
+    ``export_deploy_cfg`` reads observation/action managers from the live env
+    and writes ``<output_dir>/params/deploy.yaml``. That file is the contract
+    shared by MuJoCo sim2sim and ``g1_ctrl`` on hardware.
+    """
     try:
         from unitree_rl_lab.utils.export_deploy_cfg import export_deploy_cfg
     except ImportError as exc:
@@ -90,6 +109,7 @@ def _export_deploy_yaml(args: argparse.Namespace, output_dir: str) -> str:
     if env_name is None:
         raise ValueError("--env_name is required when exporting deploy.yaml (or pass --skip_deploy)")
 
+    # num_envs=1 is enough to inspect managers; headless keeps CI/desktop light.
     env = make_isaaclab_env(
         env_name=env_name,
         num_envs=args.num_envs,
@@ -97,7 +117,7 @@ def _export_deploy_yaml(args: argparse.Namespace, output_dir: str) -> str:
         headless=True,
     )
     try:
-        # export_deploy_cfg writes <log_dir>/params/deploy.yaml
+        # Writes <output_dir>/params/deploy.yaml
         export_deploy_cfg(env.envs.unwrapped, output_dir)
         deploy_path = os.path.join(output_dir, "params", "deploy.yaml")
         if not os.path.isfile(deploy_path):
@@ -109,7 +129,9 @@ def _export_deploy_yaml(args: argparse.Namespace, output_dir: str) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export FlashSAC actor.pt to ONNX (+ deploy.yaml)")
+    parser = argparse.ArgumentParser(
+        description="Export FlashSAC actor.pt to ONNX (+ deploy.yaml for unitree)"
+    )
     parser.add_argument(
         "--checkpoint_path",
         type=str,
@@ -126,21 +148,21 @@ def main() -> None:
         "--env_name",
         type=str,
         default=None,
-        help="IsaacLab / unitree task id for deploy.yaml (e.g. Unitree-G1-29dof-Velocity)",
+        help="Task id for deploy.yaml (must match training), e.g. Unitree-G1-29dof-Velocity",
     )
     parser.add_argument(
         "--skip_deploy",
         action="store_true",
         help="Only export ONNX; do not launch Isaac Sim for deploy.yaml",
     )
-    parser.add_argument("--num_envs", type=int, default=1, help="Envs for deploy.yaml extraction")
+    parser.add_argument("--num_envs", type=int, default=1, help="Envs when extracting deploy.yaml")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--opset", type=int, default=18)
+    parser.add_argument("--device", type=str, default="cpu", help="Device for loading actor / ONNX export")
+    parser.add_argument("--opset", type=int, default=18, help="ONNX opset (18 matches unitree tooling)")
     parser.add_argument(
         "--torchscript",
         action="store_true",
-        help="Also export TorchScript policy.pt",
+        help="Also write TorchScript policy.pt next to policy.onnx",
     )
     args = parser.parse_args()
 

@@ -1,4 +1,30 @@
-"""Load FlashSAC actor.pt and export a deterministic policy for deploy."""
+"""Load FlashSAC ``actor.pt`` and export a deterministic policy for deploy.
+
+Deploy contract (unitree_rl_lab / g1_ctrl / MuJoCo sim2sim)
+------------------------------------------------------------
+Input
+    Flat float32 observation of size ``input_dim`` — must be the **policy**
+    group only. That requires training with ``asymmetric_observation=true``
+    so the actor was never fed privileged critic features.
+
+Output
+    Action in roughly ``[-1, 1]`` as ``tanh(mean)``. Same as FlashSAC eval
+    with ``temperature=0`` (no exploration noise). Downstream controllers
+    apply JointPositionAction scale/offset from ``deploy.yaml``.
+
+Checkpoint format
+    ``Network.save`` writes::
+
+        {
+          "network_state_dict": ...,
+          "optimizer_state_dict": ...,
+          "scheduler_state_dict": ...,
+          "update_step": ...,
+        }
+
+    Architecture (blocks / dims) is inferred from weight shapes so export
+    does not need the original Hydra config.
+"""
 
 from __future__ import annotations
 
@@ -12,16 +38,21 @@ from flash_rl.agents.flashSAC.network import FlashSACActor
 
 
 def _unwrap_state_dict(ckpt: dict[str, Any] | Any) -> dict[str, torch.Tensor]:
+    """Accept FlashSAC Network checkpoints or a raw state_dict."""
     if isinstance(ckpt, dict) and "network_state_dict" in ckpt:
         return ckpt["network_state_dict"]
     if isinstance(ckpt, dict):
-        # raw state_dict
         return ckpt  # type: ignore[return-value]
     raise TypeError(f"Unsupported checkpoint type: {type(ckpt)}")
 
 
 def infer_actor_dims(state_dict: dict[str, torch.Tensor]) -> dict[str, int]:
-    """Infer architecture sizes from FlashSACActor state_dict keys."""
+    """Infer FlashSACActor sizes from parameter tensor shapes / key names.
+
+    - ``embedder.w.w.weight``: [hidden_dim, input_dim]
+    - ``predictor.mean_w.w.weight``: [action_dim, hidden_dim]
+    - ``encoder.{i}.w1.w.weight``: block count = max(i) + 1
+    """
     embed_w = state_dict["embedder.w.w.weight"]
     hidden_dim, input_dim = int(embed_w.shape[0]), int(embed_w.shape[1])
     mean_w = state_dict["predictor.mean_w.w.weight"]
@@ -46,7 +77,7 @@ def load_flashsac_actor(
     actor_path: str,
     device: str | torch.device = "cpu",
 ) -> tuple[FlashSACActor, dict[str, int]]:
-    """Build FlashSACActor from a saved actor.pt checkpoint."""
+    """Rebuild ``FlashSACActor``, load weights, set eval mode."""
     ckpt = torch.load(actor_path, map_location=device, weights_only=False)
     state_dict = _unwrap_state_dict(ckpt)
     dims = infer_actor_dims(state_dict)
@@ -63,13 +94,18 @@ def load_flashsac_actor(
 
 
 class DeterministicFlashSACActor(nn.Module):
-    """Deploy-facing actor: obs -> tanh(mean). Matches FlashSAC eval (temperature=0)."""
+    """Deploy wrapper: ``obs -> tanh(mean)`` with BatchNorm in eval mode.
+
+    Matches ``_sample_flashsac_actions(..., temperature=0.0)`` in the agent.
+    Std / entropy sampling is discarded for ONNX and controllers.
+    """
 
     def __init__(self, actor: FlashSACActor):
         super().__init__()
         self.actor = actor
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
+        # training=False freezes UnitBatchNorm running stats (inference path).
         mean, _std = self.actor.get_mean_and_std(observations, training=False)
         return torch.tanh(mean)
 
@@ -81,7 +117,12 @@ def export_actor_onnx(
     opset_version: int = 18,
     device: str | torch.device = "cpu",
 ) -> str:
-    """Export deterministic FlashSAC actor to ONNX. Returns written path."""
+    """Trace deterministic actor to ONNX (inputs: ``obs``, outputs: ``actions``).
+
+    Uses the TorchScript ONNX exporter (``dynamo=False``) for broader
+    runtime compatibility (e.g. unitree onnxruntime builds). Opset 18 matches
+    Isaac Lab / unitree export conventions.
+    """
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     policy = DeterministicFlashSACActor(actor).to(device)
     policy.eval()
@@ -106,7 +147,7 @@ def export_actor_torchscript(
     input_dim: int,
     device: str | torch.device = "cpu",
 ) -> str:
-    """Export deterministic FlashSAC actor as TorchScript. Returns written path."""
+    """Optional TorchScript export (same deterministic forward as ONNX)."""
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     policy = DeterministicFlashSACActor(actor).to(device)
     policy.eval()

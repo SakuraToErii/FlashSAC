@@ -1,3 +1,9 @@
+"""Shared array type aliases for the Isaac Lab / FlashSAC stack.
+
+Historically also included jax.numpy arrays for multi-backend envs; this fork
+is torch + numpy only.
+"""
+
 from typing import Any, Union
 
 import numpy as np

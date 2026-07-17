@@ -1,7 +1,16 @@
 #!/bin/bash
 ##################################################################################
-# IsaacLab (GPU Simulator)
-# Defaults live in configs/flashSAC_base.yaml and configs/agent/flashSAC.yaml
+# Batch-train FlashSAC on official Isaac Lab task ids (paper-style suite).
+#
+# Difference vs run_unitree.sh
+#   Task list is Isaac-* from isaaclab_tasks (hands, G1/H1/Anymal, Franka).
+#   Obs/action layouts follow official Lab configs — not unitree deploy.yaml.
+#
+# Same launch caveats as run_unitree.sh: for a local binary Isaac Sim + Lab
+# venv, use isaaclab.sh -p (or activated Lab python), not necessarily uv run.
+#
+# Defaults for buffer/AMP/envs live in configs/flashSAC_base.yaml and
+# configs/agent/flashSAC.yaml; this script only overrides env_name and seed.
 ##################################################################################
 
 env_names=(

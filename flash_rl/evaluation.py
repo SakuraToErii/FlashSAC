@@ -1,3 +1,14 @@
+"""Evaluation and video helpers for Isaac Lab.
+
+Eval always uses ``random_start_init=False`` so each episode starts from a
+full horizon (no RSL-style length decorrelation). That matches play / deploy
+measurement of return and length.
+
+Trailing ``env.reset()`` (default ``random_start_init=True``) re-staggers
+horizons before control returns to the training loop, because train/eval share
+one SimulationApp / env under Isaac Lab.
+"""
+
 from typing import Any, MutableMapping
 
 import numpy as np
@@ -13,7 +24,7 @@ def evaluate(
     num_episodes: int,
     env_type: str,
 ) -> dict[str, float]:
-    del env_type  # only IsaacLab is supported
+    del env_type  # Only Isaac Lab remains in this fork.
     num_envs = env.num_envs
 
     assert num_episodes % num_envs == 0, "num_episodes must be divisible by env.num_envs"
@@ -29,6 +40,7 @@ def evaluate(
         lengths = np.zeros(num_envs)
         success_once = np.zeros(num_envs)
         success_end = np.zeros(num_envs)
+        # Full episodes for metrics; type: ignore — VectorEnv typing lacks our kwarg.
         observations, infos = env.reset(random_start_init=False)  # type: ignore[call-arg]
 
         prev_transition: MutableMapping[str, Tensor] = {"next_observation": observations}
@@ -78,6 +90,7 @@ def evaluate(
         "avg_success_end": float(np.mean(total_success_end_list)),
     }
 
+    # Hand env back to training with decorrelated horizons (default True).
     env.reset()
 
     return eval_info
@@ -90,7 +103,12 @@ def record_video(
     env_type: str,
     video_length: int = 1000,
 ) -> dict[str, Any]:
-    del env_type  # only IsaacLab is supported
+    """Roll out episodes and stack RGB frames if the env supports render.
+
+    Isaac Lab wrapper currently raises on ``render()``; keep ``num_record_episodes=0``
+    for that backend. Signature retained for the shared train loop.
+    """
+    del env_type  # Only Isaac Lab remains in this fork.
     if num_episodes == 0:
         return {}
     num_envs = env.num_envs

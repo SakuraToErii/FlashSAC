@@ -1,13 +1,17 @@
 #!/bin/bash -ex
+# Developer static checks (not used at train/deploy time).
+# CI: .github/workflows/test.yaml runs this after uv sync --dev.
+#
+#   ./bin/lint
 
 BLACK_ARG=""
 RUFF_ARG="check --fix"
 
-# use black for the better type annotations
+# Format (black chosen for type-annotation handling)
 uv run black -l 120 $BLACK_ARG flash_rl train.py
 
-# formatter and linter
+# Lint + autofix
 uv run ruff $RUFF_ARG flash_rl
 
-# type check
+# Type check
 uv run mypy flash_rl train.py

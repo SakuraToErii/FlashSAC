@@ -66,7 +66,9 @@ class UnitRMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Explicit form (ONNX-friendly). Equivalent to F.rms_norm over the last dim.
+        # Explicit RMSNorm (last dim). Mathematically equivalent to F.rms_norm, but
+        # uses only elementary ops so torch.onnx.export (TorchScript path) works.
+        # aten::rms_norm is not supported on common ONNX opsets used for deploy.
         rms = torch.sqrt(torch.mean(x * x, dim=-1, keepdim=True) + self.eps)
         return x * (self.weight / rms)
 

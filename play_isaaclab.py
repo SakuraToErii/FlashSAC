@@ -1,3 +1,9 @@
+"""Play a FlashSAC checkpoint in Isaac Sim (viewport, non-headless).
+
+Uses the same Hydra agent/env config as training so network shapes match.
+Not sim2sim: for MuJoCo / real robot, export ONNX via export_policy.py first.
+"""
+
 import os
 
 os.environ["OMP_NUM_THREADS"] = "2"

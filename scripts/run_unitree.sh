@@ -1,7 +1,23 @@
 #!/bin/bash
 ##################################################################################
-# unitree_rl_lab tasks with FlashSAC (asymmetric obs for deploy)
-# Requires: uv sync --extra isaaclab, and unitree_rl_lab installed in the env.
+# Batch-train FlashSAC on unitree_rl_lab tasks (deploy-oriented).
+#
+# What this does
+#   Nested loops over env_names × seeds, each calling train.py with
+#   asymmetric_observation=true so the actor is deployable (policy obs only).
+#
+# Prerequisites
+#   - Active env has Isaac Lab + local Isaac Sim + unitree_rl_lab.
+#   - Prefer IsaacLab .venv, not FlashSAC's pip isaacsim extra.
+#
+# Local IsaacLab launch (recommended)
+#   source ~/projects/IsaacLab/.venv/bin/activate
+#   export CONDA_PREFIX="$VIRTUAL_ENV"
+#   Then either replace "uv run python" below with:
+#     ~/projects/IsaacLab/isaaclab.sh -p
+#   or run the same overrides manually with isaaclab.sh -p train.py ...
+#
+# Note: bare "uv run python" uses FlashSAC's project .venv if present.
 ##################################################################################
 
 env_names=(

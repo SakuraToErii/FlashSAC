@@ -1,8 +1,19 @@
+"""FlashSAC training entry (Isaac Lab).
+
+Hydra configs: configs/flashSAC_base.yaml → agent/flashSAC + env/isaaclab.
+Prefer launching with a local Isaac Lab venv + binary Isaac Sim, e.g.::
+
+    source ~/projects/IsaacLab/.venv/bin/activate
+    export CONDA_PREFIX="$VIRTUAL_ENV"
+    ~/projects/IsaacLab/isaaclab.sh -p train.py
+"""
+
 import os
 
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 os.environ["NUMEXPR_NUM_THREADS"] = "2"
+# Legacy multi-backend flags (harmless if JAX is not installed).
 os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"

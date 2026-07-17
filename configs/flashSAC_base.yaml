@@ -1,5 +1,9 @@
 ##################################################################################
-# Configurations
+# Top-level Hydra config for FlashSAC on Isaac Lab
+#
+# Composition:
+#   defaults → agent/flashSAC.yaml + env/isaaclab.yaml
+# GPU-sim defaults: large num_train_envs, n_step=3, UTD via updates_per_interaction_step.
 ##################################################################################
 
 project_name: 'FlashRL'
@@ -19,6 +23,7 @@ buffer_load_path: null
 
 num_env_steps: 50_000_896
 num_train_envs: 1024
+# Shared SimulationApp: eval/record reuse train env → must be null for isaaclab.
 num_eval_envs: null
 num_record_envs: null
 

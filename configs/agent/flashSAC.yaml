@@ -1,5 +1,9 @@
 ##################################################################################
-# FlashSAC (IsaacLab GPU sim defaults)
+# FlashSAC agent (Isaac Lab GPU-sim defaults)
+#
+# Buffer / batch / AMP sized for large parallel envs (e.g. 1024).
+# asymmetric_observation=true is required for sim2sim / real deploy: the actor
+# only sees policy obs; critic may still train on policy||critic concat.
 ##################################################################################
 
 agent_type: 'flashSAC'
@@ -50,7 +54,8 @@ gamma: ${gamma}
 n_step: ${n_step}
 
 use_compile: true
-compile_mode: 'max-autotune'  # PyTorch 2.9.1 / Python 3.11
+# PyTorch 2.7+ / 2.9: max-autotune is preferred over reduce-overhead for this stack.
+compile_mode: 'max-autotune'
 use_amp: true
 
 load_optimizer: true
