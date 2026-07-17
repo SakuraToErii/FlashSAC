@@ -13,11 +13,9 @@ Two stages
    ``params/deploy.yaml`` (joint map, PD, obs terms, action scale/offset).
    Requires local Isaac Sim + unitree_rl_lab in the active Python env.
 
-Local IsaacLab stack (recommended)::
+与 unitree 训练相同：先 activate Lab venv，再::
 
-    source ~/projects/IsaacLab/.venv/bin/activate
-    export CONDA_PREFIX="$VIRTUAL_ENV"
-    ~/projects/IsaacLab/isaaclab.sh -p export_policy.py \\
+    python export_policy.py \\
         --checkpoint_path models/.../step24400 \\
         --env_name Unitree-G1-29dof-Velocity
 

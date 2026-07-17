@@ -1,11 +1,15 @@
 """FlashSAC training entry (Isaac Lab).
 
 Hydra configs: configs/flashSAC_base.yaml → agent/flashSAC + env/isaaclab.
-Prefer launching with a local Isaac Lab venv + binary Isaac Sim, e.g.::
+
+与 unitree_rl_lab 相同习惯（本地 Sim + Lab uv venv）::
 
     source ~/projects/IsaacLab/.venv/bin/activate
-    export CONDA_PREFIX="$VIRTUAL_ENV"
-    ~/projects/IsaacLab/isaaclab.sh -p train.py
+    cd /path/to/FlashSAC
+    python train.py
+    # 或: uv run --python "$VIRTUAL_ENV/bin/python" train.py
+
+不要在本仓库裸用 ``uv run python``（可能落到没有 Sim 的 FlashSAC .venv）。
 """
 
 import os

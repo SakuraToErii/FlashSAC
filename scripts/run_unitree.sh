@@ -2,38 +2,78 @@
 ##################################################################################
 # Batch-train FlashSAC on unitree_rl_lab tasks (deploy-oriented).
 #
-# What this does
-#   Nested loops over env_names × seeds, each calling train.py with
-#   asymmetric_observation=true so the actor is deployable (policy obs only).
-#
-# Prerequisites
-#   - Active env has Isaac Lab + local Isaac Sim + unitree_rl_lab.
-#   - Prefer IsaacLab .venv, not FlashSAC's pip isaacsim extra.
-#
-# Local IsaacLab launch (recommended)
+# 启动:
 #   source ~/projects/IsaacLab/.venv/bin/activate
-#   export CONDA_PREFIX="$VIRTUAL_ENV"
-#   Then either replace "uv run python" below with:
-#     ~/projects/IsaacLab/isaaclab.sh -p
-#   or run the same overrides manually with isaaclab.sh -p train.py ...
+#   cd /path/to/FlashSAC
+#   bash scripts/run_unitree.sh
 #
-# Note: bare "uv run python" uses FlashSAC's project .venv if present.
+# 使用 $VIRTUAL_ENV/bin/python（activate 后的 Lab 环境），不要裸 uv run。
+#
+# ---------------------------------------------------------------------------
+# 并行环境数 × 每交互更新次数 与 UTD（updates-to-data）
+#
+# 定义（与 train.py / Hydra 一致）:
+#   一次 interaction 收集 num_train_envs 条 transition
+#   并做 updates_per_interaction_step 次梯度更新
+#   UTD = updates_per_interaction_step / num_train_envs
+#
+# 论文 FlashSAC GPU 默认比例:
+#   num_train_envs=1024, updates_per_interaction_step=2
+#   → UTD = 2/1024
+#
+# 本脚本默认:
+#   num_train_envs=4096, updates_per_interaction_step=8
+#   → UTD = 8/4096 = 2/1024（与论文相同）
+#
+# 其它:
+#   num_env_steps ≈ 50M（FlashSAC 默认总环境步）
+#   num_eval_episodes = num_train_envs（须整除 num_envs）
+#   asymmetric_observation=true
+#   logger_type=wandb  (project/entity 见 flashSAC_base: project_name / entity_name)
+# ---------------------------------------------------------------------------
 ##################################################################################
+
+set -euo pipefail
+
+if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+  PYTHON="${VIRTUAL_ENV}/bin/python"
+else
+  echo "[run_unitree] 请先: source ~/projects/IsaacLab/.venv/bin/activate" >&2
+  echo "[run_unitree] 当前未检测到 VIRTUAL_ENV，将回退到 PATH 中的 python。" >&2
+  PYTHON="python"
+fi
 
 env_names=(
     "Unitree-G1-29dof-Velocity"
-    "Unitree-G1-29dof-Velocity-Rough"
+    # "Unitree-G1-29dof-Velocity-Rough"
 )
-seeds=( 0 1000 2000 )
+seeds=( 42 )
+
+# --- 规模与 UTD（见文件头注释）---
+# 论文默认: NUM_TRAIN_ENVS=1024, UPDATES_PER_INTERACTION_STEP=2  →  2/1024
+NUM_TRAIN_ENVS=1024
+UPDATES_PER_INTERACTION_STEP=2   # 8/4096 = 2/1024
+
+NUM_ENV_STEPS=50000896           # 50_000_896 ≈ 50M env steps
+NUM_EVAL_EPISODES=${NUM_TRAIN_ENVS}
+
+echo "[run_unitree] python=${PYTHON}"
+echo "[run_unitree] envs=${NUM_TRAIN_ENVS}, updates/interaction=${UPDATES_PER_INTERACTION_STEP}, UTD=${UPDATES_PER_INTERACTION_STEP}/${NUM_TRAIN_ENVS}"
 
 for seed in "${seeds[@]}"; do
     for env_name in "${env_names[@]}"; do
-        echo "$env_name, $seed"
-        uv run python train.py \
+        echo "$env_name, $seed (env_steps=${NUM_ENV_STEPS})"
+        "${PYTHON}" train.py \
             --config_name flashSAC_base \
             --overrides seed=${seed} \
             --overrides env.env_name=${env_name} \
+            --overrides num_train_envs=${NUM_TRAIN_ENVS} \
+            --overrides updates_per_interaction_step=${UPDATES_PER_INTERACTION_STEP} \
+            --overrides num_env_steps=${NUM_ENV_STEPS} \
+            --overrides num_eval_episodes=${NUM_EVAL_EPISODES} \
             --overrides agent.asymmetric_observation=true \
+            --overrides logger_type=wandb \
+            --overrides project_name=FlashSAC \
             --overrides group_name=unitree \
             --overrides exp_name=flashsac
     done
