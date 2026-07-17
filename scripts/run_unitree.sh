@@ -30,6 +30,17 @@
 #   num_eval_episodes = num_train_envs（须整除 num_envs）
 #   asymmetric_observation=true
 #   logger_type=wandb  (project/entity 见 flashSAC_base: project_name / entity_name)
+#
+# Replay buffer (agent.buffer_max_length, device=cuda):
+#   论文默认 10_000_000。
+#   TorchUniformBuffer 预分配 (N, obs_dim) 的 obs + next_obs。
+#   unitree policy history_length=5 时 obs_dim≈480（仅 policy 前缀量级）；
+#   若 buffer 存 policy∥critic 会更大。
+#   粗算 float32、仅 obs+next_obs:
+#     N=10M, dim=480 → ~38 GB  → 单卡 4090(24G) 不够
+#     N=2M,  dim=480 → ~7.7 GB → 与仿真并存通常可行
+#     N=1M,  dim=480 → ~3.8 GB → 更保守
+#   本脚本默认 2M（仍放 GPU，不改 buffer_device_type）。
 # ---------------------------------------------------------------------------
 ##################################################################################
 
@@ -57,8 +68,12 @@ UPDATES_PER_INTERACTION_STEP=2   # 8/4096 = 2/1024
 NUM_ENV_STEPS=50000896           # 50_000_896 ≈ 50M env steps
 NUM_EVAL_EPISODES=${NUM_TRAIN_ENVS}
 
+# 论文 10_000_000；单卡 4090 + unitree hist5 建议 1e6~2e6（见文件头）
+BUFFER_MAX_LENGTH=2000000
+
 echo "[run_unitree] python=${PYTHON}"
 echo "[run_unitree] envs=${NUM_TRAIN_ENVS}, updates/interaction=${UPDATES_PER_INTERACTION_STEP}, UTD=${UPDATES_PER_INTERACTION_STEP}/${NUM_TRAIN_ENVS}"
+echo "[run_unitree] buffer_max_length=${BUFFER_MAX_LENGTH} (cuda)"
 
 for seed in "${seeds[@]}"; do
     for env_name in "${env_names[@]}"; do
@@ -71,6 +86,7 @@ for seed in "${seeds[@]}"; do
             --overrides updates_per_interaction_step=${UPDATES_PER_INTERACTION_STEP} \
             --overrides num_env_steps=${NUM_ENV_STEPS} \
             --overrides num_eval_episodes=${NUM_EVAL_EPISODES} \
+            --overrides agent.buffer_max_length=${BUFFER_MAX_LENGTH} \
             --overrides agent.asymmetric_observation=true \
             --overrides logger_type=wandb \
             --overrides project_name=FlashSAC \
@@ -78,3 +94,4 @@ for seed in "${seeds[@]}"; do
             --overrides exp_name=flashsac
     done
 done
+
