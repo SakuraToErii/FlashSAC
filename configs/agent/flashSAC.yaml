@@ -1,5 +1,5 @@
 ##################################################################################
-# FlashSAC
+# FlashSAC (IsaacLab GPU sim defaults)
 ##################################################################################
 
 agent_type: 'flashSAC'
@@ -7,8 +7,8 @@ agent_type: 'flashSAC'
 seed: ${seed}
 device_type: 'cuda'
 
-buffer_max_length: 1_000_000
-buffer_min_length: 10_000
+buffer_max_length: 10_000_000
+buffer_min_length: 100_000
 buffer_device_type: 'cuda'
 sample_batch_size: 2048
 
@@ -49,7 +49,7 @@ gamma: ${gamma}
 n_step: ${n_step}
 
 use_compile: true
-compile_mode: 'auto'     # 'max-autotune' if torch>=2.9.0 else 'reduce-overhead'
+compile_mode: 'max-autotune'  # PyTorch 2.9.1 / Python 3.11
 use_amp: true
 
 load_optimizer: true

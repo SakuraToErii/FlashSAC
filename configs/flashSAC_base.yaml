@@ -14,26 +14,26 @@ agent_load_path: null
 buffer_load_path: null
 
 ##################################################################################
-# Environment
+# Environment (IsaacLab GPU sim defaults)
 ##################################################################################
 
-num_env_steps: 1_000_000
-num_train_envs: 1
-num_eval_envs: 1
-num_record_envs: 1
+num_env_steps: 50_000_896
+num_train_envs: 1024
+num_eval_envs: null
+num_record_envs: null
 
-num_eval_episodes: 50
-num_record_episodes: 1
+num_eval_episodes: 1024
+num_record_episodes: 0
 
 ##################################################################################
 # Training
 ##################################################################################
 
-gamma: 0.99 
-n_step: 1
+gamma: 0.99
+n_step: 3
 
 num_interaction_steps: ${eval:'${num_env_steps} / (${num_train_envs})'}
-updates_per_interaction_step: 1
+updates_per_interaction_step: 2
 num_update_steps: ${eval:'${num_interaction_steps} * (${updates_per_interaction_step})'}
 
 evaluation_per_interaction_step: ${eval:'int(${num_interaction_steps} /10)'}  # evaluation frequency per interaction step.
@@ -46,4 +46,4 @@ save_buffer_per_interaction_step: null                                        # 
 defaults:
 - _self_
 - agent: flashSAC
-- env: mujoco
+- env: isaaclab
