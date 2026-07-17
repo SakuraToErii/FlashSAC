@@ -1,3 +1,12 @@
+"""FlashSAC Actor / Critic / Temperature 模块组装。
+
+对应论文:
+  §3.2 Soft Actor-Critic — 随机策略、双 Q、可学习温度 α
+  §4.2 与 Figure 2 — trunk（Embedder + N×Block + RMSNorm）+ 任务头
+"""
+
+from __future__ import annotations
+
 import math
 
 import torch
@@ -16,6 +25,12 @@ from flash_rl.agents.flashSAC.layer import (
 
 
 class FlashSACActor(nn.Module):
+    """策略网络 π_θ(a|s)（论文式 (2) 中的策略）。
+
+    前向: obs → Embedder → Blocks → RMSNorm → NormalTanhPolicy
+    get_mean_and_std: 部署 / 确定性评估用（tanh(mean) 见 agent 采样）。
+    """
+
     def __init__(
         self,
         num_blocks: int,
@@ -47,6 +62,7 @@ class FlashSACActor(nn.Module):
         observations: torch.Tensor,
         training: bool,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """返回 tanh 动作与 log_prob（含 Jacobian 修正）。"""
         x = observations
         x = self.embedder(x, training)
         for block in self.encoder:
@@ -57,12 +73,12 @@ class FlashSACActor(nn.Module):
 
 
 class FlashSACDoubleCritic(nn.Module):
-    """
-    Double-Q for Clipped Double Q-learning.
-    https://arxiv.org/pdf/1802.09477v3
+    """双 Q 分布型 critic（Clipped Double Q + §4.2 Distributional）。
 
-    Fuses N parallel critic networks into single batched operations.
-    All internal computation uses (N, batch, dim) tensor layout.
+    参考 TD3/SAC 的 min 双 Q（Fujimoto et al. 2018）。
+    内部用 ensemble 布局 (2, B, ·) 一次前向算两个 Q，再在 update 中取 min。
+
+    输入为 concat(s, a)；输出 qs 形状 (2, B)，以及各原子 log_prob。
     """
 
     def __init__(
@@ -106,6 +122,12 @@ class FlashSACDoubleCritic(nn.Module):
 
 
 class FlashSACTemperature(nn.Module):
+    """SAC 温度 α（论文式 (2)(5) 中的 α）。
+
+    参数化为 log_temp，前向返回 exp(log_temp)=α > 0。
+    自动调温使策略熵逼近目标熵 Ḧ（§4.3 式 (7)）。
+    """
+
     def __init__(self, initial_value: float = 0.01):
         super().__init__()
         self.log_temp = nn.Parameter(torch.tensor([math.log(initial_value)], dtype=torch.float32))

@@ -1,3 +1,23 @@
+"""FlashSAC 智能体：训练循环接口（论文 §4 整体编排）。
+
+三大机制在运行时的落点:
+  §4.1 Fast Training
+    - 大并行环境 / 大 buffer / 大 batch / 低 UTD：由 configs + train.py 控制
+      （如 num_train_envs=1024, buffer 10M, batch 2048, updates_per_interaction_step）
+    - 本类: TorchUniformBuffer、AMP、torch.compile、actor 延迟更新周期
+  §4.2 Stable Training
+    - 网络结构: network/layer
+    - 权重归一、交叉 batch BN、分布型目标: update.py
+    - 奖励缩放: RewardNormalizer（式 6）
+  §4.3 Exploration
+    - 统一目标熵 Ḧ（式 7）: temp_target_sigma → temp_target_entropy
+    - Noise Repetition: Zeta 采样重复长度 k，复用 ϵ ~ N(0,I)
+
+对外接口与 BaseAgent 一致: sample_actions / process_transition / update / save|load。
+"""
+
+from __future__ import annotations
+
 import math
 import os
 from dataclasses import dataclass, replace
@@ -29,11 +49,18 @@ from flash_rl.types import NDArray, Tensor
 
 @dataclass
 class FlashSACConfig:
+    """与 configs/agent/flashSAC.yaml 字段对齐的超参容器。
+
+    论文 GPU 默认量级（§4.1 / 实验设置）:
+      buffer_max_length ~ 10M, sample_batch_size 2048,
+      actor/critic 多 block 宽网, UTD 由 train 侧 updates_per_interaction_step 体现。
+    """
+
     seed: int
     normalize_reward: bool
-    normalized_G_max: float
+    normalized_G_max: float  # 分布 critic 支撑半宽 G_max（式 6 / [−G_max, G_max]）
 
-    asymmetric_observation: bool
+    asymmetric_observation: bool  # True: actor 只用 policy 维（sim2real 非对称 AC）
     device_type: str
 
     buffer_max_length: int
@@ -52,27 +79,28 @@ class FlashSACConfig:
     actor_num_blocks: int
     actor_hidden_dim: int
     actor_bc_alpha: float
+    # §4.3 Noise Repetition: P(k) ∝ k^{−μ}, k ∈ [1, max_n]
     actor_noise_zeta_mu: float
     actor_noise_zeta_max: int
-    actor_update_period: int
+    actor_update_period: int  # 每隔多少次 critic 步才更新 actor/温度（降 UTD）
 
     critic_num_blocks: int
     critic_hidden_dim: int
-    critic_num_bins: int
+    critic_num_bins: int  # 分布原子数
     critic_min_v: float
     critic_max_v: float
-    critic_target_update_tau: float
+    critic_target_update_tau: float  # 式 (3) 的 τ
 
     temp_initial_value: float
-    temp_target_sigma: float
-    temp_target_entropy: float
+    temp_target_sigma: float  # 式 (7) 的 σ_tgt，论文默认 0.15
+    temp_target_entropy: float  # 由 σ_tgt 与 |A| 在构造时写入
 
     gamma: float
     n_step: int
 
-    use_compile: bool
+    use_compile: bool  # §4.1 Code Optimization: torch.compile
     compile_mode: str
-    use_amp: bool
+    use_amp: bool  # 混合精度
 
     load_optimizer: bool
     load_reward_normalizer: bool
@@ -85,7 +113,10 @@ def _init_flashsac_networks(
     cfg: FlashSACConfig,
     device: torch.device,
 ) -> tuple[Network, Network, Network, Network]:
-    # Create learning rate schedule
+    """构建 actor / critic / target_critic / temperature 及优化器。
+
+    Network 封装: compile、weight-norm 钩子、target 的 EMA 源。
+    """
     warmup_cosine_decay_lr = warmup_cosine_decay_scheduler(
         init_value=cfg.learning_rate_init,
         peak_value=cfg.learning_rate_peak,
@@ -94,7 +125,7 @@ def _init_flashsac_networks(
         decay_steps=cfg.learning_rate_decay_step,
     )
 
-    # Initialize actor
+    # --- Actor π_θ ---
     actor_net = FlashSACActor(
         num_blocks=cfg.actor_num_blocks,
         input_dim=actor_observation_dim,
@@ -116,11 +147,11 @@ def _init_flashsac_networks(
         compile_mode=cfg.compile_mode,
         use_weight_normalization=True,
     )
-    # Manually compile `get_mean_and_std` function
+    # 部署路径用的 get_mean_and_std 单独 compile
     if cfg.use_compile:
         actor.network.get_mean_and_std = torch.compile(actor.network.get_mean_and_std, mode=cfg.compile_mode)  # type: ignore
 
-    # Initialize critic
+    # --- Online Critic Q_ϕ（双 Q 分布型）---
     critic_net = FlashSACDoubleCritic(
         num_blocks=cfg.critic_num_blocks,
         input_dim=critic_observation_dim + action_dim,
@@ -148,7 +179,7 @@ def _init_flashsac_networks(
         use_weight_normalization=True,
     )
 
-    # Initialize target critic (same as critic but no optimizer)
+    # --- Target Critic Q̄（式 3 EMA）---
     target_critic_net = FlashSACDoubleCritic(
         num_blocks=cfg.critic_num_blocks,
         input_dim=critic_observation_dim + action_dim,
@@ -165,11 +196,11 @@ def _init_flashsac_networks(
         compile_network=cfg.use_compile,
         compile_mode=cfg.compile_mode,
         use_weight_normalization=True,
-        ema_source=critic,  # wire EMA update source
+        ema_source=critic,
         ema_tau=cfg.critic_target_update_tau,
     )
 
-    # Initialize temperature
+    # --- Temperature α ---
     temp_net = FlashSACTemperature(cfg.temp_initial_value).to(device)
     temp_optimizer = optim.Adam(
         temp_net.parameters(),
@@ -189,7 +220,7 @@ def _init_flashsac_networks(
         use_weight_normalization=False,
     )
 
-    # normalize network parameters after initialization
+    # 初始化后即做一次权重归一
     actor.normalize_parameters()
     critic.normalize_parameters()
     target_critic.normalize_parameters()
@@ -199,8 +230,9 @@ def _init_flashsac_networks(
 
 @torch.compile
 def _build_truncated_zeta_cdf(mu: float, max_n: int) -> torch.Tensor:
-    """
-    Build the truncated zeta CDF for the given mu and max_n.
+    """截断 Zeta 分布 CDF（§4.3 Noise Repetition）。
+
+    P(k) ∝ k^{−μ}，k=1…max_n，再归一化。短重复更常出现，偶尔长相关轨迹。
     """
     ns = torch.arange(1, max_n + 1, dtype=torch.float32)
     pmf = ns ** (-mu)
@@ -211,10 +243,7 @@ def _build_truncated_zeta_cdf(mu: float, max_n: int) -> torch.Tensor:
 
 @torch.compile
 def _sample_integer_from_cdf(cdf: torch.Tensor) -> torch.Tensor:
-    """
-    Sample an integer from the given CDF.
-    Returns a 0-d int32 tensor.
-    """
+    """从预计算 CDF 采样整数 k（逆变换采样）。"""
     u = torch.rand((), device=cdf.device)
     idx = torch.argmax((u < cdf).to(torch.int32))
     return (idx + 1).to(torch.int32)
@@ -229,19 +258,24 @@ def _sample_flashsac_actions(
     cur_n: torch.Tensor,
     zeta_cdf: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Sample actions with noise repeat logic fully in torch."""
-    # forward actor → distribution mean and std
+    """动作采样 + Noise Repetition（§4.3）。
+
+    训练 (temperature=1):
+      每隔 k 步重采样 ϵ ~ N(0,I)，k ~ Zeta；
+      a = tanh(μ + σ ⊙ ϵ)  （ϵ 在重复窗口内固定 → 时间相关探索）
+    评估 (temperature=0):
+      a = tanh(μ)，确定性策略（部署 / ONNX 同路径）。
+    """
     mean, std = actor.apply(
         "get_mean_and_std",
         observations=observations,
         training=False,
     )
-    # return deterministic actions without changing noise sampling params
     if temperature == 0.0:
         actions = torch.tanh(mean)
         return noise, actions, cur_count, cur_n
 
-    # reinit noise after a certain number of steps (only during training)
+    # 到达重复上限则换新噪声与新的 k
     reinit = (cur_count == 0) | (cur_count >= cur_n)
 
     new_noise = torch.randn_like(mean)
@@ -251,7 +285,6 @@ def _sample_flashsac_actions(
     cur_n = torch.where(reinit, new_n, cur_n)
     cur_count = torch.where(reinit, torch.zeros_like(cur_count), cur_count)
 
-    # sample action
     actions = torch.tanh(mean + std * noise * temperature)
 
     return noise, actions, cur_count + 1, cur_n
@@ -268,8 +301,11 @@ def _update_networks(
     device: torch.device,
     grad_scaler: Optional[GradScaler],
 ) -> dict[str, torch.Tensor]:
+    """单次梯度步: 可选 actor+温度，始终 critic + target EMA。
+
+    actor_update_period>1 时降低策略更新频率，配合 §4.1「更少梯度步」。
+    """
     if do_actor_update:
-        # Update actor
         actor_info = update_actor(
             actor=actor,
             critic=critic,
@@ -281,7 +317,6 @@ def _update_networks(
             grad_scaler=grad_scaler,
         )
 
-        # Update temperature
         temperature_info = update_temperature(
             temperature=temperature,
             entropy=actor_info["actor/entropy"],
@@ -291,12 +326,11 @@ def _update_networks(
         actor_info = {}
         temperature_info = {}
 
-    # Update critic
     critic_info = update_critic(
-        actor=actor,  # updated
+        actor=actor,
         critic=critic,
         target_critic=target_critic,
-        temperature=temperature,  # updated
+        temperature=temperature,
         batch=batch,  # type: ignore
         min_v=cfg.critic_min_v,
         max_v=cfg.critic_max_v,
@@ -312,7 +346,6 @@ def _update_networks(
         target_network=target_critic,
     )
 
-    # Merge all info dicts
     update_info = {
         **actor_info,
         **critic_info,
@@ -324,7 +357,7 @@ def _update_networks(
 
 
 def _resolve_compile_mode(mode: str) -> str:
-    """Resolve 'auto' compile mode based on the installed torch version."""
+    """将 compile_mode='auto' 映射到具体 torch.compile mode。"""
     if mode != "auto":
         return mode
     major, minor = (int(x) for x in torch.__version__.split(".")[:2])
@@ -334,6 +367,8 @@ def _resolve_compile_mode(mode: str) -> str:
 
 
 class FlashSACAgent(BaseAgent[FlashSACConfig]):
+    """FlashSAC 完整智能体（对应论文算法在 PyTorch 中的落地）。"""
+
     def __init__(
         self,
         observation_space: gym.spaces.Space[NDArray],
@@ -341,10 +376,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         env_info: dict[str, Any],
         cfg: FlashSACConfig,
     ):
-        """
-        FlashSAC agent implementation in PyTorch.
-        """
-
+        # 观测维: critic 用完整 obs（可含 privileged）；actor 可切 policy 前缀
         self._critic_observation_dim: int = observation_space.shape[-1]  # type: ignore
         self._action_dim: int = action_space.shape[-1]  # type: ignore
         if cfg.asymmetric_observation:
@@ -352,6 +384,8 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         else:
             self._actor_observation_dim = self._critic_observation_dim
 
+        # §4.3 式 (7): Ḧ = (1/2) |A| log(2πe σ_tgt²)
+        # 实现写为 0.5 * |A| * log(...)，与上式一致
         temp_target_entropy = 0.5 * self._action_dim * math.log(2 * math.pi * math.e * cfg.temp_target_sigma**2)
         compile_mode = _resolve_compile_mode(cfg.compile_mode)
         cfg = replace(cfg, temp_target_entropy=temp_target_entropy, compile_mode=compile_mode)
@@ -372,7 +406,6 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         )
         self._device = torch.device(device_type)
 
-        # Initialize networks
         (
             self._actor,
             self._critic,
@@ -387,10 +420,10 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         )
         self._update_step = 0
 
-        # Grad scaler for FP16 AMP
+        # §4.1 混合精度
         self._grad_scaler = GradScaler(device=self._device.type, enabled=self._cfg.use_amp)
 
-        # Noise repetition (zeta distribution)
+        # §4.3 Noise Repetition 状态（跨 env 步保持）
         self._zeta_cdf = _build_truncated_zeta_cdf(
             mu=self._cfg.actor_noise_zeta_mu, max_n=self._cfg.actor_noise_zeta_max
         ).to(self._device)
@@ -399,7 +432,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         action_shape = tuple(action_space.shape) if action_space.shape is not None else ()
         self._cached_noise = torch.randn(action_shape, device=self._device)
 
-        # Reward normalizer
+        # §4.2 自适应奖励缩放
         self.reward_normalizer = None
         if self._cfg.normalize_reward:
             self.reward_normalizer = RewardNormalizer(
@@ -409,7 +442,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
                 device=self._device,
             )
 
-        # Replay buffer
+        # §4.1 大容量 replay + n-step 回报
         self._replay_buffer = TorchUniformBuffer(
             observation_space=observation_space,
             action_space=action_space,
@@ -427,6 +460,8 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         prev_transition: MutableMapping[str, Tensor],
         training: bool,
     ) -> Tensor:
+        """与环境交互时的动作。training=False 时确定性 tanh(mean)。"""
+        del interaction_step
         if training:
             temperature = 1.0
         else:
@@ -457,10 +492,9 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         return actions.cpu().numpy()
 
     def process_transition(self, transition: MutableMapping[str, Tensor]) -> None:
-        # add to replay buffer
+        """写入 replay，并更新奖励归一化统计。"""
         self._replay_buffer.add(transition)
 
-        # update reward normalizer
         if self._cfg.normalize_reward:
             assert "reward" in transition and self.reward_normalizer is not None
             self.reward_normalizer.update_reward_stats(
@@ -470,14 +504,17 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             )
 
     def can_start_training(self) -> bool:
+        """buffer 达到 min_length 后才开始梯度更新。"""
         return self._replay_buffer.can_sample()
 
     def update(self) -> dict[str, Any]:
+        """一次完整更新: sample batch → 归一化 reward → actor/critic/温度/EMA。"""
         batch = cast(dict[str, torch.Tensor], self._replay_buffer.sample())
 
         for k, v in batch.items():
             batch[k] = v.to(self._device, non_blocking=True)
 
+        # 非对称: 策略只看 policy 前缀；critic 看完整 obs
         if self._cfg.asymmetric_observation:
             batch["actor_observation"] = batch["observation"][:, : self._actor_observation_dim]
             batch["actor_next_observation"] = batch["next_observation"][:, : self._actor_observation_dim]
@@ -487,10 +524,8 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
 
         if self._cfg.normalize_reward:
             assert self.reward_normalizer is not None
-            # batch["unnormalized_reward"] = batch["reward"].clone()
             batch["reward"] = self.reward_normalizer.normalize_rewards(batch["reward"])
 
-        # Update step
         _update_info = _update_networks(
             batch=batch,
             actor=self._actor,
@@ -504,7 +539,6 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         )
         self._update_step += 1
 
-        # Convert tensors to floats
         update_info: dict[str, float] = {}
         for key, value in _update_info.items():
             if isinstance(value, torch.Tensor):
@@ -515,6 +549,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         return update_info
 
     def save(self, path: str) -> None:
+        """保存 actor/critic/target/温度/奖励归一/AMP 状态。"""
         os.makedirs(path, exist_ok=True)
         self._actor.save(os.path.join(path, "actor.pt"))
         self._critic.save(os.path.join(path, "critic.pt"))
@@ -541,7 +576,6 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         self._target_critic.load(os.path.join(path, "target_critic.pt"), load_optimizer=False)
         self._temperature.load(os.path.join(path, "temperature.pt"), load_optimizer=load_optimizer)
 
-        # Load agent-level optimizer state
         if load_optimizer:
             agent_state_path = os.path.join(path, "agent_state.pt")
             assert os.path.exists(agent_state_path)
