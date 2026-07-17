@@ -29,7 +29,7 @@
 #   num_env_steps ≈ 50M（FlashSAC 默认总环境步）
 #   num_eval_episodes = num_train_envs（须整除 num_envs）
 #   asymmetric_observation=true
-#   logger_type=wandb  (project/entity 见 flashSAC_base: project_name / entity_name)
+#   logger_type=wandb, entity_name=null（用本地 wandb login 的默认账号）
 #
 # Replay buffer (agent.buffer_max_length, device=cuda):
 #   论文默认 10_000_000。
@@ -90,6 +90,7 @@ for seed in "${seeds[@]}"; do
             --overrides agent.asymmetric_observation=true \
             --overrides logger_type=wandb \
             --overrides project_name=FlashSAC \
+            --overrides entity_name=null \
             --overrides group_name=unitree \
             --overrides exp_name=flashsac
     done

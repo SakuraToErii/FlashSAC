@@ -11,12 +11,16 @@ class WandbTrainerLogger:
         self._wandb = wandb
         self.cfg = cfg
         dict_cfg = OmegaConf.to_container(cfg, throw_on_missing=True)
-        wandb.init(
-            project=cfg.project_name,
-            entity=cfg.entity_name,
-            group=cfg.group_name,
-            config=dict_cfg,  # type: ignore
-        )
+        # entity=None/null: 不写死 org，交给 wandb 当前登录用户的默认 entity
+        entity = getattr(cfg, "entity_name", None)
+        init_kwargs: dict[str, Any] = {
+            "project": cfg.project_name,
+            "group": cfg.group_name,
+            "config": dict_cfg,
+        }
+        if entity is not None:
+            init_kwargs["entity"] = entity
+        wandb.init(**init_kwargs)  # type: ignore[arg-type]
         self.media_dict: dict[str, Any] = {}
         self.reset()
 

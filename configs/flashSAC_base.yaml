@@ -7,7 +7,8 @@
 ##################################################################################
 
 project_name: 'FlashRL'
-entity_name: 'draftrec'
+# null → wandb 使用当前 login 账号的默认 entity（避免写到别人的 org 导致 permission denied）
+entity_name: null
 group_name: 'test'
 exp_name: 'test'
 seed: 0
